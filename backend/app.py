@@ -107,6 +107,7 @@ cache = {
 
 # Store price history for interval calculations
 price_history = defaultdict(lambda: deque(maxlen=CONFIG['MAX_PRICE_HISTORY']))
+price_history_1min = defaultdict(lambda: deque(maxlen=CONFIG['MAX_PRICE_HISTORY'])) # For 1-minute changes
 
 def log_config():
     """Log current configuration"""
@@ -329,6 +330,60 @@ def calculate_interval_changes(current_prices):
                 "current_price": price,
                 "initial_price_3min": interval_price,
                 "price_change_percentage_3min": price_change,
+                "actual_interval_minutes": actual_interval_minutes
+            })
+    
+    return formatted_data
+
+def calculate_1min_changes(current_prices):
+    """Calculate price changes over 1 minute"""
+    current_time = time.time()
+    interval_seconds = 60 # 1 minute
+    
+    # Update price history with current prices
+    for symbol, price in current_prices.items():
+        if price > 0:
+            price_history_1min[symbol].append((current_time, price))
+    
+    # Calculate changes for each symbol
+    formatted_data = []
+    for symbol, price in current_prices.items():
+        if price <= 0:
+            continue
+            
+        history = price_history_1min[symbol]
+        if len(history) < 2:
+            continue
+            
+        # Find price from interval ago (or earliest available)
+        interval_price = None
+        interval_time = None
+        
+        for timestamp, historical_price in history:
+            if current_time - timestamp >= interval_seconds:
+                interval_price = historical_price
+                interval_time = timestamp
+                break
+        
+        # If no interval data, use oldest available
+        if interval_price is None and len(history) >= 2:
+            interval_price = history[0][1]
+            interval_time = history[0][0]
+        
+        if interval_price is None or interval_price <= 0:
+            continue
+            
+        # Calculate percentage change
+        price_change = ((price - interval_price) / interval_price) * 100
+        actual_interval_minutes = (current_time - interval_time) / 60 if interval_time else 0
+        
+        # Only include significant changes (configurable threshold)
+        if abs(price_change) >= 0.01: # Reverted to original threshold
+            formatted_data.append({
+                "symbol": symbol,
+                "current_price": price,
+                "initial_price_1min": interval_price,
+                "price_change_percentage_1min": price_change,
                 "actual_interval_minutes": actual_interval_minutes
             })
     
@@ -570,6 +625,19 @@ def format_crypto_data(crypto_data):
             "current": coin["current_price"],
             "initial_3min": coin["initial_price_3min"],
             "gain": coin["price_change_percentage_3min"],
+            "interval_minutes": round(coin["actual_interval_minutes"], 1)
+        }
+        for coin in crypto_data
+    ]
+
+def format_crypto_data_1min(crypto_data):
+    """Format 1-minute crypto data for frontend with detailed price tracking"""
+    return [
+        {
+            "symbol": coin["symbol"],
+            "current": coin["current_price"],
+            "initial_1min": coin["initial_price_1min"],
+            "gain": coin["price_change_percentage_1min"],
             "interval_minutes": round(coin["actual_interval_minutes"], 1)
         }
         for coin in crypto_data
@@ -1194,6 +1262,82 @@ def get_top_movers_bar():
 
 # =============================================================================
 # EXISTING ENDPOINTS (Updated root to show new individual endpoints)
+
+def get_crypto_data_1min():
+    """Main function to fetch and process 1-minute crypto data"""
+    current_time = time.time()
+    
+    # No cache for 1-min data, always fetch fresh
+    
+    try:
+        # Get current prices for 1-minute calculations
+        current_prices = get_current_prices()
+        if not current_prices:
+            logging.warning("No current prices available for 1-min data")
+            return None
+            
+        # Calculate 1-minute interval changes
+        crypto_data = calculate_1min_changes(current_prices)
+        
+        if not crypto_data:
+            logging.warning(f"No 1-min crypto data available after calculation - {len(current_prices)} current prices, {len(price_history_1min)} symbols with history")
+            return None
+        
+        # Separate gainers and losers based on 1-minute changes
+        gainers = [coin for coin in crypto_data if coin.get("price_change_percentage_1min", 0) > 0]
+        losers = [coin for coin in crypto_data if coin.get("price_change_percentage_1min", 0) < 0]
+        
+        # Sort by 1-minute percentage change
+        gainers.sort(key=lambda x: x["price_change_percentage_1min"], reverse=True)
+        losers.sort(key=lambda x: x["price_change_percentage_1min"])
+        
+        result = {
+            "gainers": format_crypto_data_1min(gainers[:15]),
+            "losers": format_crypto_data_1min(losers[:15]),
+        }
+        
+        logging.info(f"Successfully processed 1-min data: {len(result['gainers'])} gainers, {len(result['losers'])} losers")
+        return result
+        
+    except Exception as e:
+        logging.error(f"Error in get_crypto_data_1min: {e}")
+        return None
+
+@app.route('/api/component/gainers-table-1min')
+def get_gainers_table_1min():
+    """Individual endpoint for 1-minute gainers table"""
+    try:
+        data = get_crypto_data_1min()
+        if not data:
+            return jsonify({"error": "No 1-minute data available"}), 503
+            
+        gainers = data.get('gainers', [])
+        
+        gainers_table_data = []
+        for i, coin in enumerate(gainers[:20]):  # Top 20 gainers
+            gainers_table_data.append({
+                "rank": i + 1,
+                "symbol": coin["symbol"],
+                "current_price": coin["current"],
+                "price_change_percentage_1min": coin["gain"],
+                "initial_price_1min": coin["initial_1min"],
+                "actual_interval_minutes": coin.get("interval_minutes", 1),
+                "momentum": "strong" if coin["gain"] > 5 else "moderate",
+                "alert_level": "high" if coin["gain"] > 10 else "normal"
+            })
+        
+        return jsonify({
+            "component": "gainers_table_1min",
+            "data": gainers_table_data,
+            "count": len(gainers_table_data),
+            "table_type": "gainers",
+            "time_frame": "1_minute",
+            "update_interval": 10000, # 10 seconds for 1-min data
+            "last_updated": datetime.now().isoformat()
+        })
+    except Exception as e:
+        logging.error(f"Error in 1-minute gainers table endpoint: {e}")
+        return jsonify({"error": str(e)}), 500
 # =============================================================================
 
 # Add startup time tracking
@@ -1507,9 +1651,18 @@ def background_crypto_updates():
     """Background thread to update cache periodically"""
     while True:
         try:
-            data = get_crypto_data()
-            if data:
-                logging.info(f"Cache updated: {len(data['gainers'])} gainers, {len(data['losers'])} losers, {len(data['banner'])} banner items")
+            # Update 3-min data cache
+            data_3min = get_crypto_data()
+            if data_3min:
+                logging.info(f"3-min cache updated: {len(data_3min['gainers'])} gainers, {len(data_3min['losers'])} losers, {len(data_3min['banner'])} banner items")
+
+            # Also fetch current prices to update 1-min history
+            current_prices = get_current_prices()
+            if current_prices:
+                # This will update price_history_1min deque
+                calculate_1min_changes(current_prices)
+                logging.info(f"1-min price history updated with {len(current_prices)} new prices.")
+
         except Exception as e:
             logging.error(f"Error in background update: {e}")
         
