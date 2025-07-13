@@ -11,7 +11,7 @@ import threading
 from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from config import CONFIG
 from logging_config import setup_logging
 from logging_config import log_config as log_config_with_param
@@ -390,121 +390,14 @@ def calculate_1min_changes(current_prices):
     return formatted_data
 
 def get_current_prices():
-    """Fetch current prices from Coinbase with CoinGecko fallback"""
-    try:
-        return get_coinbase_prices()
-    except Exception as e:
-        logging.error(f"Coinbase API failed: {e}, trying CoinGecko backup...")
-        return get_coingecko_prices()
+    """Fetch current prices from Coinbase"""
+    return get_coinbase_prices()
 
-def get_coingecko_prices():
-    """Fetch current prices from CoinGecko as backup"""
-    try:
-        url = "https://api.coingecko.com/api/v3/coins/markets"
-        params = {
-            'vs_currency': 'usd',
-            'order': 'market_cap_desc',
-            'per_page': 50,
-            'page': 1,
-            'sparkline': False,
-            'price_change_percentage': '1h,24h'
-        }
-        response = requests.get(url, params=params, timeout=CONFIG['API_TIMEOUT'])
-        if response.status_code == 200:
-            coins = response.json()
-            current_prices = {}
-            
-            for coin in coins:
-                symbol = f"{coin['symbol'].upper()}-USD"
-                current_prices[symbol] = float(coin['current_price'])
-            
-            logging.info(f"Successfully fetched {len(current_prices)} prices from CoinGecko backup")
-            return current_prices
-        else:
-            logging.error(f"CoinGecko API Error: {response.status_code}")
-            return {}
-    except Exception as e:
-        logging.error(f"Error fetching prices from CoinGecko: {e}")
-        return {}
 
 def get_24h_top_movers():
     """Fetch top 24h gainers/losers for banner"""
-    try:
-        return get_coingecko_24h_top_movers()
-    except Exception as e:
-        logging.error(f"CoinGecko 24h top movers API failed: {e}, trying Coinbase backup...")
-        return get_coinbase_24h_top_movers()
+    return get_coinbase_24h_top_movers()
 
-def get_coingecko_24h_top_movers():
-    """Fetch 24h top gainers/losers from CoinGecko for banner"""
-    try:
-        url = "https://api.coingecko.com/api/v3/coins/markets"
-        params = {
-            'vs_currency': 'usd',
-            'order': 'market_cap_desc',
-            'per_page': 100,
-            'page': 1,
-            'sparkline': False,
-            'price_change_percentage': '1h,24h'
-        }
-        response = requests.get(url, params=params, timeout=CONFIG['API_TIMEOUT'])
-        if response.status_code == 200:
-            coins = response.json()
-            formatted_data = []
-            
-            for coin in coins:
-                try:
-                    current_price = float(coin['current_price'])
-                    price_change_24h = float(coin.get('price_change_percentage_24h', 0))
-                    price_change_1h = float(coin.get('price_change_percentage_1h_in_currency', 0))
-                    volume_24h = float(coin['total_volume'])
-                    market_cap = float(coin.get('market_cap', 0))
-                    
-                    # Calculate initial prices
-                    initial_price_24h = current_price / (1 + (price_change_24h / 100)) if price_change_24h != -100 else current_price
-                    initial_price_1h = current_price / (1 + (price_change_1h / 100)) if price_change_1h != -100 else current_price
-                    
-                    # Only include significant moves (> 1% change) and decent volume
-                    if abs(price_change_24h) >= CONFIG['MIN_CHANGE_THRESHOLD'] and volume_24h > CONFIG['MIN_VOLUME_THRESHOLD']:
-                        formatted_data.append({
-                            "symbol": f"{coin['symbol'].upper()}-USD",
-                            "current_price": current_price,
-                            "initial_price_24h": initial_price_24h,
-                            "initial_price_1h": initial_price_1h,
-                            "price_change_24h": price_change_24h,
-                            "price_change_1h": price_change_1h,
-                            "volume_24h": volume_24h,
-                            "market_cap": market_cap
-                        })
-                except Exception as e:
-                    logging.warning(f"Error processing 24h data for {coin.get('symbol', 'unknown')}: {e}")
-                    continue
-            
-            # Sort by absolute percentage change (biggest movers first)
-            formatted_data.sort(key=lambda x: abs(x["price_change_24h"]), reverse=True)
-            
-            # Get top gainers and losers
-            gainers_24h = [coin for coin in formatted_data if coin["price_change_24h"] > 0][:10]
-            losers_24h = [coin for coin in formatted_data if coin["price_change_24h"] < 0][:10]
-            
-            # Mix them for banner (alternate between gainers and losers)
-            banner_mix = []
-            max_length = max(len(gainers_24h), len(losers_24h))
-            for i in range(max_length):
-                if i < len(gainers_24h):
-                    banner_mix.append(gainers_24h[i])
-                if i < len(losers_24h):
-                    banner_mix.append(losers_24h[i])
-            
-            logging.info(f"Successfully fetched 24h top movers: {len(gainers_24h)} gainers, {len(losers_24h)} losers")
-            return banner_mix[:20]
-            
-        else:
-            logging.error(f"CoinGecko 24h top movers API Error: {response.status_code}")
-            return []
-    except Exception as e:
-        logging.error(f"Error fetching 24h top movers from CoinGecko: {e}")
-        return []
 
 def get_coinbase_24h_top_movers():
     """Fetch 24h top movers from Coinbase as backup (OPTIMIZED)"""
@@ -724,83 +617,38 @@ def get_crypto_data():
 # =============================================================================
 
 def get_historical_chart_data(symbol, days=7):
-    """Fetch historical price data for charts"""
+    """Fetch historical price data for charts from Coinbase"""
     try:
-        # Convert symbol format for CoinGecko (remove -USD suffix)
-        coin_id = symbol.replace('-USD', '').lower()
-        
-        # Enhanced symbol mapping to CoinGecko IDs
-        symbol_mapping = {
-            'btc': 'bitcoin',
-            'eth': 'ethereum', 
-            'sol': 'solana',
-            'ada': 'cardano',
-            'dot': 'polkadot',
-            'link': 'chainlink',
-            'matic': 'polygon',
-            'avax': 'avalanche-2',
-            'atom': 'cosmos',
-            'algo': 'algorand',
-            'xrp': 'ripple',
-            'doge': 'dogecoin',
-            'shib': 'shiba-inu',
-            'uni': 'uniswap',
-            'aave': 'aave',
-            'bch': 'bitcoin-cash',
-            'ltc': 'litecoin',
-            'icp': 'internet-computer',
-            'fet': 'fetch-ai',
-            'op': 'optimism',
-            'arb': 'arbitrum',
-            'jup': 'jupiter-exchange-solana',
-            'stx': 'stacks',
-            'tia': 'celestia',
-            'sui': 'sui',
-            'apt': 'aptos',
-            'near': 'near',
-            'inj': 'injective-protocol',
-            'sei': 'sei-network',
-            'wld': 'worldcoin-wld',
-            'pyth': 'pyth-network',
-            'rndr': 'render-token'
-        }
-        
-        coin_id = symbol_mapping.get(coin_id, coin_id)
-        
-        # Log the coin ID being requested
-        logging.info(f"Fetching chart data for {symbol} -> CoinGecko ID: {coin_id}")
-        
-        url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart"
+        # Convert days to start and end timestamps
+        end_time = datetime.now()
+        start_time = end_time - timedelta(days=days)
+
+        # Determine granularity based on days
+        # Coinbase Pro API granularities: 60, 300, 900, 3600, 21600, 86400
+        if days <= 1: # Up to 1 day, use 1-minute granularity
+            granularity = 60
+        elif days <= 7: # Up to 7 days, use 1-hour granularity
+            granularity = 3600
+        else: # More than 7 days, use 1-day granularity
+            granularity = 86400
+
+        url = f"https://api.exchange.coinbase.com/products/{symbol}/candles"
         params = {
-            'vs_currency': 'usd',
-            'days': days,
-            'interval': 'hourly' if days <= 7 else 'daily'
+            'start': start_time.isoformat(),
+            'end': end_time.isoformat(),
+            'granularity': granularity
         }
-        
-        # Add User-Agent header to avoid rate limiting
-        headers = {
-            'User-Agent': 'CBMo4ers-Dashboard/1.0 (https://github.com/cbmo4ers)'
-        }
-        
-        response = requests.get(url, params=params, headers=headers, timeout=15)
-        
+
+        response = requests.get(url, params=params, timeout=CONFIG['API_TIMEOUT'])
+
         if response.status_code == 200:
             data = response.json()
-            
-            # Format chart data
-            prices = data.get('prices', [])
-            volumes = data.get('total_volumes', [])
-            
-            if not prices:
-                logging.warning(f"No price data returned for {symbol}")
-                return []
-            
             chart_data = []
-            for i, price_point in enumerate(prices):
-                timestamp = price_point[0]
-                price = price_point[1]
-                volume = volumes[i][1] if i < len(volumes) else 0
-                
+            for entry in data:
+                timestamp = entry[0] * 1000  # Convert to milliseconds
+                price = entry[4]  # Close price
+                volume = entry[5]
+
                 chart_data.append({
                     'timestamp': timestamp,
                     'datetime': datetime.fromtimestamp(timestamp / 1000).isoformat(),
@@ -808,16 +656,16 @@ def get_historical_chart_data(symbol, days=7):
                     'volume': round(volume, 2)
                 })
             
-            logging.info(f"Successfully fetched {len(chart_data)} chart points for {symbol}")
+            # Sort by timestamp in ascending order (Coinbase returns in descending)
+            chart_data.sort(key=lambda x: x['timestamp'])
+
+            logging.info(f"Successfully fetched {len(chart_data)} chart points for {symbol} from Coinbase")
             return chart_data
-            
-        elif response.status_code == 404:
-            logging.warning(f"Coin not found on CoinGecko: {coin_id} (from {symbol})")
-            return []
+
         else:
-            logging.error(f"CoinGecko chart API Error for {symbol}: {response.status_code} - {response.text}")
+            logging.error(f"Coinbase chart API Error for {symbol}: {response.status_code} - {response.text}")
             return []
-            
+
     except requests.RequestException as e:
         logging.error(f"Network error fetching chart data for {symbol}: {e}")
         return []
@@ -826,70 +674,9 @@ def get_historical_chart_data(symbol, days=7):
         return []
 
 def get_trending_coins():
-    """Get trending/recommended coins to watch"""
-    try:
-        # Get trending coins from CoinGecko
-        trending_url = "https://api.coingecko.com/api/v3/search/trending"
-        trending_response = requests.get(trending_url, timeout=10)
-        
-        # Get top gainers for additional recommendations
-        markets_url = "https://api.coingecko.com/api/v3/coins/markets"
-        params = {
-            'vs_currency': 'usd',
-            'order': 'percent_change_24h_desc',
-            'per_page': 20,
-            'page': 1,
-            'sparkline': False,
-            'price_change_percentage': '24h,7d'
-        }
-        markets_response = requests.get(markets_url, params=params, timeout=10)
-        
-        recommendations = []
-        
-        # Process trending coins
-        if trending_response.status_code == 200:
-            trending_data = trending_response.json()
-            for coin in trending_data.get('coins', [])[:5]:
-                coin_info = coin.get('item', {})
-                recommendations.append({
-                    'symbol': f"{coin_info.get('symbol', '').upper()}-USD",
-                    'name': coin_info.get('name', ''),
-                    'rank': coin_info.get('market_cap_rank', 0),
-                    'reason': 'trending',
-                    'score': coin_info.get('score', 0)
-                })
-        
-        # Process top gainers
-        if markets_response.status_code == 200:
-            markets_data = markets_response.json()
-            for coin in markets_data[:10]:
-                if coin.get('price_change_percentage_24h', 0) > 5:  # Only significant gainers
-                    recommendations.append({
-                        'symbol': f"{coin['symbol'].upper()}-USD",
-                        'name': coin['name'],
-                        'current_price': coin['current_price'],
-                        'change_24h': coin.get('price_change_percentage_24h', 0),
-                        'change_7d': coin.get('price_change_percentage_7d_in_currency', 0),
-                        'volume_24h': coin['total_volume'],
-                        'market_cap': coin['market_cap'],
-                        'rank': coin['market_cap_rank'],
-                        'reason': 'top_gainer'
-                    })
-        
-        # Remove duplicates and sort by relevance
-        seen_symbols = set()
-        unique_recommendations = []
-        for rec in recommendations:
-            if rec['symbol'] not in seen_symbols:
-                seen_symbols.add(rec['symbol'])
-                unique_recommendations.append(rec)
-        
-        logging.info(f"Generated {len(unique_recommendations)} coin recommendations")
-        return unique_recommendations[:15]
-        
-    except Exception as e:
-        logging.error(f"Error fetching trending coins: {e}")
-        return []
+    """Get trending/recommended coins to watch (CoinGecko removed)"""
+    logging.info("CoinGecko trending coins API removed. Returning empty list.")
+    return []
 
 def analyze_coin_potential(symbol, chart_data):
     """Analyze a coin's potential based on historical data"""
@@ -1488,25 +1275,19 @@ def get_popular_charts():
 
 @app.route('/api/market-overview')
 def get_market_overview():
-    """Get overall market overview with key metrics"""
+    """Get overall market overview with key metrics (CoinGecko removed)"""
     try:
-        # Get global market data
-        global_url = "https://api.coingecko.com/api/v3/global"
-        global_response = requests.get(global_url, timeout=10)
+        # CoinGecko global market data removed. Returning default values.
+        overview = {
+            "total_market_cap_usd": 0,
+            "total_volume_24h_usd": 0,
+            "market_cap_change_24h": 0,
+            "active_cryptocurrencies": 0,
+            "markets": 0,
+            "btc_dominance": 0
+        }
         
-        overview = {}
-        if global_response.status_code == 200:
-            global_data = global_response.json().get('data', {})
-            overview = {
-                "total_market_cap_usd": global_data.get('total_market_cap', {}).get('usd', 0),
-                "total_volume_24h_usd": global_data.get('total_volume', {}).get('usd', 0),
-                "market_cap_change_24h": global_data.get('market_cap_change_percentage_24h_usd', 0),
-                "active_cryptocurrencies": global_data.get('active_cryptocurrencies', 0),
-                "markets": global_data.get('markets', 0),
-                "btc_dominance": global_data.get('market_cap_percentage', {}).get('btc', 0)
-            }
-        
-        # Get trending coins
+        # Trending coins now returns empty list
         trending = get_trending_coins()[:5]
         
         # Get fear & greed index (mock data since API requires key)
@@ -1566,7 +1347,6 @@ def health_check():
     try:
         # Test primary API connectivity
         coinbase_status = "unknown"
-        coingecko_status = "unknown"
         
         try:
             coinbase_response = requests.get("https://api.exchange.coinbase.com/products", timeout=5)
@@ -1574,18 +1354,10 @@ def health_check():
         except:
             coinbase_status = "down"
             
-        try:
-            coingecko_response = requests.get("https://api.coingecko.com/api/v3/ping", timeout=5)
-            coingecko_status = "up" if coingecko_response.status_code == 200 else "down"
-        except:
-            coingecko_status = "down"
-        
         # Determine overall health
         overall_status = "healthy"
-        if coinbase_status == "down" and coingecko_status == "down":
+        if coinbase_status == "down":
             overall_status = "unhealthy"
-        elif coinbase_status == "down" or coingecko_status == "down":
-            overall_status = "degraded"
             
         return jsonify({
             "status": overall_status,
@@ -1599,8 +1371,7 @@ def health_check():
                 "ttl": cache["ttl"]
             },
             "external_apis": {
-                "coinbase": coinbase_status,
-                "coingecko": coingecko_status
+                "coinbase": coinbase_status
             },
             "data_tracking": {
                 "symbols_tracked": len(price_history),
@@ -1761,3 +1532,4 @@ __all__ = [
     "format_crypto_data",
     "format_banner_data"
 ]
+
