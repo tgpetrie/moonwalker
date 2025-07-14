@@ -14,12 +14,6 @@
       "destination": "https://moonwalker.onrender.com/api/$1"
     }
   ],
-  "routes": [
-    {
-      "src": "/(.*)",
-      "dest": "frontend/$1"
-    }
-  ],
   "build": {
     "env": {
       "VITE_API_URL": "https://moonwalker.onrender.com"
