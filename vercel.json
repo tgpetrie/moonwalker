@@ -2,14 +2,9 @@
   "rewrites": [
     {
       "source": "/api/(.*)",
-      "destination": "https://moonwalker.onrender.com/"
+      "destination": "https://moonwalker.onrender.com/api/$1"
     }
   ],
-  "build": {
-    "env": {
-      "VITE_API_URL": "https://moonwalker.onrender.com/"
-    }
-  },
   "buildCommand": "cd frontend && npm run build",
   "outputDirectory": "frontend/build"
 }
